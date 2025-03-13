@@ -15,6 +15,8 @@ import numpy
 from imageio import imread
 
 mat = imread('sample.jpg').astype('f8')
+# resize to 4000x4000
+mat = numpy.repeat(numpy.repeat(mat, 4, axis=0), 4, axis=1)
 m, n = mat.shape
 
 # %%
@@ -304,21 +306,94 @@ time_results['Cython'] = time_cython
 pyplot.bar(time_results.keys(), time_results.values())
 pyplot.ylabel('Time (s)')
 pyplot.title('Execution Time')
-pyplot.xticks(rotation=45)
+pyplot.xticks(rotation=90)
 pyplot.tight_layout()
 pyplot.yscale('log')  # set y-axis to log scale
 pyplot.show()
 # %%
 # Ctypes
 #https://docs.python.org/3/library/ctypes.html
+
 # %%
-%%file laplacian_filter.c
+## Using gcc
+
+# %%
+%%file laplacian_filter_gcc.c
+
+#include <stdio.h>
+#include <stdlib.h>
+
+void laplacian_filter_gcc(double *mat, const int m, const int n, double *retval)
+{
+    for( int r = 1; r < m - 1; r++)
+    {
+        const int offset = r*n;
+
+        for( int c = 1; c < n - 1; c++)
+        {
+            const int i = offset + c;
+            const int i_top = offset + n + c;
+            const int i_bottom = offset - n + c;
+            const int i_left = offset + (c-1);
+            const int i_right = offset + (c+1);
+
+            retval[i] = -4.0*mat[i] + mat[i_bottom] + mat[i_top] + mat[i_left] + mat[i_right];
+        }
+    }
+}
+# %%
+!gcc laplacian_filter_gcc.c -std=c99 -shared -fPIC -O3 -o laplacian_filter_gcc.so
+# %%
+!ls -l laplacian_filter_gcc.so
+# %%
+import os
+import ctypes
+
+# load the function from the shared library
+clib = ctypes.cdll.LoadLibrary(os.path.join(os.getcwd(), 'laplacian_filter_gcc.so'))
+clib.laplacian_filter_gcc.argtypes = [
+    ctypes.POINTER(ctypes.c_double),
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.POINTER(ctypes.c_double),
+]
+
+
+def laplacian_filter_ctypes_gcc(mat, m, n, retval):
+    mat_ptr = mat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+    retval_ptr = retval.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+    clib.laplacian_filter_gcc(mat_ptr, m, n, retval_ptr)
+# %%
+laplacian_filter_ctypes_gcc(mat_flat, m, n, mat_edges_flat)
+pyplot.imshow(mat_edges_flat.reshape(m, n) > 0, cmap='gray')
+pyplot.colorbar()
+pyplot.title('Laplacian Filter - Edges Detected')
+pyplot.tight_layout()
+pyplot.show()
+# %%
+timeit_ctypes = %timeit -o laplacian_filter_ctypes_gcc(mat_flat, m, n, mat_edges_flat)
+time_ctypes = timeit_ctypes.best
+
+# save the value into a dictionary
+time_results['Ctypes GCC'] = time_ctypes
+
+pyplot.bar(time_results.keys(), time_results.values())
+pyplot.ylabel('Time (s)')
+pyplot.title('Execution Time')
+pyplot.xticks(rotation=90)
+pyplot.tight_layout()
+pyplot.yscale('log')  # set y-axis to log scale
+pyplot.show()
+
+# %%
+%%file laplacian_filter_gcc_opt.c
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <immintrin.h>
 
-void laplacian_filter(double *mat, const int m, const int n, double *retval)
+void laplacian_filter_gcc_opt(double *mat, const int m, const int n, double *retval)
 {
     // Load constant for multiplication by -4
     const __m512d neg_four = _mm512_set1_pd(-4.0);
@@ -376,60 +451,75 @@ void laplacian_filter(double *mat, const int m, const int n, double *retval)
 # %%
 ## Using gcc
 # %%
-#!gcc laplacian_filter.c -std=c99 -shared -fPIC -O3 -o laplacian_filter_gcc.so
-!gcc laplacian_filter.c -std=c99 -shared -fPIC -O3 -o laplacian_filter_gcc.so -mavx512f -march=znver4
+!gcc laplacian_filter_gcc_opt.c -std=c99 -shared -fPIC -O3 -o laplacian_filter_gcc_opt.so -mavx512f -march=znver4
 # %%
-!ls -l laplacian_filter_gcc.so
+!ls -l laplacian_filter_gcc_opt.so
 # %%
 import os
 import ctypes
 
 # load the function from the shared library
-clib = ctypes.cdll.LoadLibrary(os.path.join(os.getcwd(), 'laplacian_filter_gcc.so'))
-clib.laplacian_filter.argtypes = [
+clib = ctypes.cdll.LoadLibrary(os.path.join(os.getcwd(), 'laplacian_filter_gcc_opt.so'))
+clib.laplacian_filter_gcc_opt.argtypes = [
     ctypes.POINTER(ctypes.c_double),
     ctypes.c_int,
     ctypes.c_int,
     ctypes.POINTER(ctypes.c_double),
 ]
 
-
-def laplacian_filter_ctypes_gcc(mat, m, n, retval):
+def laplacian_filter_ctypes_gcc_opt(mat, m, n, retval):
     mat_ptr = mat.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     retval_ptr = retval.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
 
-    clib.laplacian_filter(mat_ptr, m, n, retval_ptr)
+    clib.laplacian_filter_gcc_opt(mat_ptr, m, n, retval_ptr)
 # %%
-laplacian_filter_ctypes_gcc(mat_flat, m, n, mat_edges_flat)
+laplacian_filter_ctypes_gcc_opt(mat_flat, m, n, mat_edges_flat)
 pyplot.imshow(mat_edges_flat.reshape(m, n) > 0, cmap='gray')
 pyplot.colorbar()
 pyplot.title('Laplacian Filter - Edges Detected')
 pyplot.tight_layout()
 pyplot.show()
 # %%
-timeit_ctypes = %timeit -o laplacian_filter_ctypes_gcc(mat_flat, m, n, mat_edges_flat)
-time_ctypes = timeit_ctypes.best
+timeit_ctypes_opt = %timeit -o laplacian_filter_ctypes_gcc_opt(mat_flat, m, n, mat_edges_flat)
+time_ctypes_opt = timeit_ctypes_opt.best
 
 # save the value into a dictionary
-time_results['Ctypes GCC'] = time_ctypes
+time_results['Ctypes GCC opt'] = time_ctypes_opt
 
 pyplot.bar(time_results.keys(), time_results.values())
-
-# find the minimum time and plot it in red
-min_time = min(time_results.values())
-min_time_key = [key for key in time_results if time_results[key] == min_time][0]
-
-# for each bar plot the inverse of the speedup of the minimum time
-# format the text to show these as integrers inversed speedup is greater than 100
-for key, value in time_results.items():
-    inv_speedup = 1/min_time*value
-    pyplot.text(key, value, f'{int(inv_speedup)}x' if inv_speedup > 10 else f'{inv_speedup:.2f}x', ha='center')
-pyplot.grid(axis='y')
-pyplot.bar(min_time_key, min_time, color='red')
 pyplot.ylabel('Time (s)')
 pyplot.title('Execution Time')
 pyplot.xticks(rotation=90)
 pyplot.tight_layout()
 pyplot.yscale('log')  # set y-axis to log scale
 pyplot.show()
+
+# %%
+## Using assembly
+
+## .. todo:: Add assembly implementation
+
+
+# %%
+# find the minimum time and plot all bars with the minimum time in red
+min_time = min(time_results.values())
+min_time_key = [key for key in time_results if time_results[key] == min_time][0]
+
+# Plot all bars
+colors = ['red' if key == min_time_key else 'blue' for key in time_results.keys()]
+bars = pyplot.bar(time_results.keys(), time_results.values(), color=colors)
+
+# Add text labels showing speedup relative to minimum time
+for key, value in time_results.items():
+    inv_speedup = value / min_time  # This is the relative slowdown factor
+    pyplot.text(key, value, f'{int(inv_speedup)}x' if inv_speedup > 10 else f'{inv_speedup:.2f}x', ha='center')
+
+pyplot.grid(axis='y')
+pyplot.ylabel('Time (s)')
+pyplot.title('Execution Time')
+pyplot.xticks(rotation=90)
+pyplot.tight_layout()
+pyplot.yscale('log')  # set y-axis to log scale
+pyplot.show()
+
 # %%
